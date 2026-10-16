@@ -37,6 +37,15 @@
 #include "symmetric.h"
 #include "fips202.h"
 
+/* ---- 基准测试插桩: 全局拒绝采样计数器 (bench.c 使用) ----
+ * slps_rej_user_sign  : slps_user_sign 的拒绝采样循环迭代次数
+ * slps_rej_authorize  : slps_principal_authorize_agent 的拒绝采样循环迭代次数
+ * slps_rej_agent_sign : slps_agent_sign 的拒绝采样循环迭代次数
+ */
+unsigned long long slps_rej_user_sign  = 0;
+unsigned long long slps_rej_authorize  = 0;
+unsigned long long slps_rej_agent_sign = 0;
+
 
 /*===============================================================
  * slps_setup —— Setup: 系统参数生成
@@ -219,9 +228,10 @@ int slps_user_sign(uint8_t* sigma,
   uint8_t cid[CTILDEBYTES];
   uint8_t *mu, *nu1;
   uint16_t nonce = 0;
+  unsigned int rej_count = 0;
   keccak_state state;
   polyvecl mat[K], s1, y, z;
-  polyveck s2, t, w, w1, w0, ww;
+  polyveck s2, t, w, w1, w0;
   poly cp;
   polyvecl yhat;
 
@@ -256,6 +266,7 @@ int slps_user_sign(uint8_t* sigma,
 
   /* Step 6: 拒绝采样循环 */
 rej:
+  rej_count++;
   /* 采样遮掩向量 y */
   polyvecl_uniform_gamma1(&y, nu1, nonce);
   nonce = nonce + L;
@@ -266,7 +277,7 @@ rej:
   polyvec_matrix_pointwise_montgomery(&w, mat, &yhat);
   polyveck_reduce(&w);
   polyveck_invntt_tomont(&w);
-  ww = w;
+
   /* 分解 w -> (w1, w0) */
   polyveck_caddq(&w);
   polyveck_decompose(&w1, &w0, &w);
@@ -299,13 +310,10 @@ rej:
   /* 计算 r0 = LowBits(w - c * s2) */
   {
     polyveck cs2;
-    polyveck_caddq(&ww);
-  
     polyveck_pointwise_poly_montgomery(&cs2, &cp, &s2);
     polyveck_reduce(&cs2);
     polyveck_invntt_tomont(&cs2);
-    polyveck_sub(&ww, &ww, &cs2);
-    polyveck_decompose(&w1, &w0, &ww);
+    polyveck_sub(&w0, &w0, &cs2);
     polyveck_reduce(&w0);
   }
 
@@ -316,6 +324,7 @@ rej:
   /* Step 7: 打包签名 sigma = (~c, z) */
   slps_pack_user_sig(sigma, cid, &z);
 
+  slps_rej_user_sign += rej_count;
   return 0;
 }
 
@@ -473,6 +482,7 @@ int slps_principal_authorize_agent(uint8_t* t,
   uint8_t cidp[CTILDEBYTES];
   uint8_t *mu, *nu2;
   uint16_t nonce = 0;
+  unsigned int rej_count = 0;
   keccak_state state;
   polyvecl mat[K], s1p, yp, zip;
   polyveck s2p, tp, wa, wa1, wa0;
@@ -527,6 +537,7 @@ int slps_principal_authorize_agent(uint8_t* t,
 
   /* Step 8: 拒绝采样循环 */
 rej:
+  rej_count++;
   /* 采样遮掩向量 yp */
   polyvecl_uniform_gamma1(&yp, nu2, nonce);
   nonce = nonce + L;
@@ -576,6 +587,8 @@ rej:
     /* 从完整的 wa (非 wa1) 减去 c*s2，再分解取低位 */
     polyveck_sub(&wr, &wa, &cs2p);
     polyveck_reduce(&wr);
+    /* decompose 要求输入为标准表示 (0..Q-1)，必须先 caddq */
+    polyveck_caddq(&wr);
     polyveck_decompose(&wr1, &wa0, &wr);
   }
 
@@ -586,6 +599,7 @@ rej:
   /* Step 9: 打包凭证 T_IDp = (IDp, IDa, ~c_IDp, z_IDp) */
   slps_pack_tidp(t, idp, ida, cidp, &zip);
 
+  slps_rej_authorize += rej_count;
   return 0;
 }
 
@@ -776,6 +790,7 @@ int slps_agent_sign(uint8_t* sig,
   uint8_t *mu, *nu3;
   uint8_t cidp_bytes[CTILDEBYTES], cida_bytes[CTILDEBYTES];
   uint16_t nonce = 0;
+  unsigned int rej_count = 0;
   keccak_state state;
   polyvecl mat[K], s1, y, za_id, za, zip;
   polyveck tpidp;
@@ -850,6 +865,7 @@ int slps_agent_sign(uint8_t* sig,
 
   /* Step 10: 拒绝采样循环 */
 rej:
+  rej_count++;
   /* 采样遮掩向量 y */
   polyvecl_uniform_gamma1(&y, nu3, nonce);
   nonce = nonce + L;
@@ -861,16 +877,6 @@ rej:
   polyveck_reduce(&w_full);
   polyveck_invntt_tomont(&w_full);
 
-  /* w_minus_cs2 = w - c*s2，用于 decompose 取低位（r0） */
-  {
-    polyveck cs2tmp;
-    polyveck_pointwise_poly_montgomery(&cs2tmp, &cp, &cs2);
-    polyveck_reduce(&cs2tmp);
-    polyveck_invntt_tomont(&cs2tmp);
-    polyveck_sub(&w_minus_cs2, &w_full, &cs2tmp);
-    polyveck_reduce(&w_minus_cs2);
-  }
-
   /* 对原始 w 分解取高位，用于计算 w1_a */
   w_for_decompose = w_full;
   polyveck_caddq(&w_for_decompose);
@@ -878,16 +884,10 @@ rej:
 
   /* w1_a = wa1 + w'1_IDp，打包 w1buf */
   {
-    unsigned int j;
     sclls_polyveck_unpack_w1(&w1a, w1idpbuf);
     polyveck_add(&w1a, &w1a, &wa1);
-    polyveck_caddq(&w1a);
     polyveck_pack_w1(w1buf, &w1a);
   }
-
-  /* 对 w - c*s2 分解取低位，作为 r0 */
-  polyveck_caddq(&w_minus_cs2);
-  polyveck_decompose(&wa1, &wa0, &w_minus_cs2);
 
   /* 计算挑战 ~c_IDa = H3(mu_IDa || w1_a) */
   {
@@ -921,6 +921,20 @@ rej:
   if (polyvecl_chknorm(&za_id, GAMMA1 - BETA))
     goto rej;
 
+  /* 计算 w_minus_cs2 = w - c_IDa*s2（c_IDa 已在上一步确定） */
+  {
+    polyveck cs2tmp;
+    polyveck_pointwise_poly_montgomery(&cs2tmp, &cp, &cs2);
+    polyveck_reduce(&cs2tmp);
+    polyveck_invntt_tomont(&cs2tmp);
+    polyveck_sub(&w_minus_cs2, &w_full, &cs2tmp);
+    polyveck_reduce(&w_minus_cs2);
+  }
+
+  /* 对 w - c_IDa*s2 分解取低位，作为 r0 */
+  polyveck_caddq(&w_minus_cs2);
+  polyveck_decompose(&wa1, &wa0, &w_minus_cs2);
+
   /* 拒绝采样检查 #2: ||r0||_inf < GAMMA2 - BETA (wa0 已是 w - c*s2 的低位) */
   if (polyveck_chknorm(&wa0, GAMMA2 - BETA))
     goto rej;
@@ -950,6 +964,7 @@ rej:
     slps_pack_sigma(sig, cidp_bytes, cida_bytes, &za, &hw);
   }
 
+  slps_rej_agent_sign += rej_count;
   return 0;
 }
 
@@ -1003,7 +1018,9 @@ int slps_agent_verify(const uint8_t* m,
 
   /* Step 2: 检查 z_a 的范数 ||z_a||_inf < 2*GAMMA1 - 2*BETA */
   if (polyvecl_chknorm(&za, 2 * (GAMMA1 - BETA)))
+  {
     return -1;
+  }
 
   /* Step 3: 解包公钥 pkp = t_IDp 和 pka = t_IDa */
   slps_unpack_pk(&tkp, pkp);
@@ -1082,7 +1099,11 @@ int slps_agent_verify(const uint8_t* m,
   /* Step 10: 比较 ~c_IDa 和 ~c'_IDa */
   for (i = 0; i < CTILDEBYTES; ++i)
     if (cida[i] != c2[i])
-      return -1;
+      break;
+  if (i < CTILDEBYTES)
+  {
+    return -1;
+  }
 
   return 0;
 }

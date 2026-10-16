@@ -291,7 +291,14 @@ int poly_chknorm(const poly *a, int32_t B) {
   int32_t t;
   DBENCH_START();
 
-  if(B > (Q-1)/8)
+  /* B must fit comfortably so that the absolute-value trick below
+   * (t = a - (t & 2a)) does not overflow int32. The trick only needs
+   * |a| <= INT32_MAX (so 2a doesn't overflow), but conservatively we
+   * require B <= (Q-1)/2. Larger B values (e.g. MODE 3 z0 bound
+   * 2*(GAMMA1 - BETA) = 1048184, which is between (Q-1)/8=1047552
+   * and (Q-1)/2=4190208) are still safe to check, so only reject if
+   * B exceeds the half-modulus. */
+  if(B > (Q-1)/2)
     return 1;
 
   /* It is ok to leak which coefficient violates the bound since
@@ -1183,80 +1190,64 @@ void sclls_polyz0_unpack(poly *r, const uint8_t *a) {
 /*************************************************
 * Name:        sclls_polyhw_pack
 *
-* Description: Map each allowed coefficient to codeword 0..5, then pack
-*              eight 3-bit codewords into three bytes (24 bits).
-*              GAMMA1==(1<<17): {-1,0,1,-45,-44,-43} -> {0,1,2,3,4,5}.
-*              GAMMA1==(1<<19): {-1,0,1,-17,-16,-15} -> {0,1,2,3,4,5}.
+* Description: Map each allowed coefficient to a 4-bit codeword 0..11, then
+*              pack two codewords per byte (N/2 bytes per polynomial).
+*              Allowed sets (hw = HighBits(a+b+c) - HighBits(a) - HighBits(b)
+*              - HighBits(c), with the modulus wrap counted by m=0,1,2):
+*              GAMMA1==(1<<17): {-90..-87,-46..-43,-2..1} -> {0..3,4..7,8..11}
+*              GAMMA1==(1<<19): {-34..-31,-18..-15,-2..1} -> {0..3,4..7,8..11}
 *
-* Arguments:   - uint8_t *r: output, length at least 3*(N/8)==SCLLS_HWBYTES_PERPOLY
+* Arguments:   - uint8_t *r: output, length SCLLS_HWBYTES_PERPOLY (256*4/8)
 *              - const poly *a: input polynomial
 **************************************************/
 void sclls_polyhw_pack(uint8_t *r, const poly *a) {
   unsigned int i;
-  int8_t t[8];
+  unsigned int c0, c1;
   DBENCH_START();
-  for(i = 0; i < N/8; ++i) {
+  for(i = 0; i < N/2; ++i) {
 #if GAMMA1 == (1 << 17)
-    t[0] =(a->coeffs[8*i+0]+40)>0 ? 1 + a->coeffs[8*i+0] : 48 + a->coeffs[8*i+0];
-    t[1] =(a->coeffs[8*i+1]+40)>0 ? 1 + a->coeffs[8*i+1] : 48 + a->coeffs[8*i+1];
-    t[2] =(a->coeffs[8*i+2]+40)>0 ? 1 + a->coeffs[8*i+2] : 48 + a->coeffs[8*i+2];
-    t[3] =(a->coeffs[8*i+3]+40)>0 ? 1 + a->coeffs[8*i+3] : 48 + a->coeffs[8*i+3];
-    t[4] =(a->coeffs[8*i+4]+40)>0 ? 1 + a->coeffs[8*i+4] : 48 + a->coeffs[8*i+4];
-    t[5] =(a->coeffs[8*i+5]+40)>0 ? 1 + a->coeffs[8*i+5] : 48 + a->coeffs[8*i+5];
-    t[6] =(a->coeffs[8*i+6]+40)>0 ? 1 + a->coeffs[8*i+6] : 48 + a->coeffs[8*i+6];
-    t[7] =(a->coeffs[8*i+7]+40)>0 ? 1 + a->coeffs[8*i+7] : 48 + a->coeffs[8*i+7];
+    if(a->coeffs[2*i+0] <= -87) c0 = (unsigned int)(a->coeffs[2*i+0] + 90);
+    else if(a->coeffs[2*i+0] <= -43) c0 = (unsigned int)(a->coeffs[2*i+0] + 50);
+    else c0 = (unsigned int)(a->coeffs[2*i+0] + 10);
+    if(a->coeffs[2*i+1] <= -87) c1 = (unsigned int)(a->coeffs[2*i+1] + 90);
+    else if(a->coeffs[2*i+1] <= -43) c1 = (unsigned int)(a->coeffs[2*i+1] + 50);
+    else c1 = (unsigned int)(a->coeffs[2*i+1] + 10);
 #elif GAMMA1 == (1 << 19)
-    t[0] =(a->coeffs[8*i+0]+10)>0 ? 1 + a->coeffs[8*i+0] : 20 + a->coeffs[8*i+0];
-    t[1] =(a->coeffs[8*i+1]+10)>0 ? 1 + a->coeffs[8*i+1] : 20 + a->coeffs[8*i+1];
-    t[2] =(a->coeffs[8*i+2]+10)>0 ? 1 + a->coeffs[8*i+2] : 20 + a->coeffs[8*i+2];
-    t[3] =(a->coeffs[8*i+3]+10)>0 ? 1 + a->coeffs[8*i+3] : 20 + a->coeffs[8*i+3];
-    t[4] =(a->coeffs[8*i+4]+10)>0 ? 1 + a->coeffs[8*i+4] : 20 + a->coeffs[8*i+4];
-    t[5] =(a->coeffs[8*i+5]+10)>0 ? 1 + a->coeffs[8*i+5] : 20 + a->coeffs[8*i+5];
-    t[6] =(a->coeffs[8*i+6]+10)>0 ? 1 + a->coeffs[8*i+6] : 20 + a->coeffs[8*i+6];
-    t[7] =(a->coeffs[8*i+7]+10)>0 ? 1 + a->coeffs[8*i+7] : 20 + a->coeffs[8*i+7];
+    if(a->coeffs[2*i+0] <= -31) c0 = (unsigned int)(a->coeffs[2*i+0] + 34);
+    else if(a->coeffs[2*i+0] <= -15) c0 = (unsigned int)(a->coeffs[2*i+0] + 22);
+    else c0 = (unsigned int)(a->coeffs[2*i+0] + 10);
+    if(a->coeffs[2*i+1] <= -31) c1 = (unsigned int)(a->coeffs[2*i+1] + 34);
+    else if(a->coeffs[2*i+1] <= -15) c1 = (unsigned int)(a->coeffs[2*i+1] + 22);
+    else c1 = (unsigned int)(a->coeffs[2*i+1] + 10);
 #endif
-    r[3*i+0]  = (uint8_t)(((t[0] << 5) & 0xE0) | ((t[1] << 2) & 0x1C) | ((t[2] >> 1) & 0x03));
-    r[3*i+1]  = (uint8_t)(((t[2] << 7) & 0x80) | ((t[3] << 4) & 0x70) | ((t[4] << 1) & 0x0E) | ((t[5] >> 2) & 0x01));
-    r[3*i+2]  = (uint8_t)(((t[5] << 6) & 0xC0) | ((t[6] << 3) & 0x38) | (t[7] & 0x07));
-
+    r[i] = (uint8_t)((c0 & 0x0F) | ((c1 & 0x0F) << 4));
   }
   DBENCH_STOP(*tpack);
 }
 /*************************************************
 * Name:        sclls_polyhw_unpack
 *
-* Description: Inverse of sclls_polyhw_pack (3-bit codewords, eight per 3 bytes).
+* Description: Inverse of sclls_polyhw_pack (4-bit codewords, two per byte).
 *
 * Arguments:   - poly *a: pointer to output polynomial
 *              - const uint8_t *r: packed data, length SCLLS_HWBYTES_PERPOLY
 **************************************************/
 void sclls_polyhw_unpack(poly *a, const uint8_t *r) {
-  unsigned int i, j;
-  uint8_t b0, b1, b2;
-  uint8_t t;
+  unsigned int i;
+  uint8_t b, c0, c1;
   DBENCH_START();
 
-  for(i = 0; i < N/8; ++i) {
-    b0 = r[3*i+0];
-    b1 = r[3*i+1];
-    b2 = r[3*i+2];
-    for(j = 0; j < 8; ++j) {
-      switch(j) {
-      case 0: t = (uint8_t)((b0 >> 5) & 7); break;
-      case 1: t = (uint8_t)((b0 >> 2) & 7); break;
-      case 2: t = (uint8_t)(((b0 & 3) << 1) | ((b1 >> 7) & 1)); break;
-      case 3: t = (uint8_t)((b1 >> 4) & 7); break;
-      case 4: t = (uint8_t)((b1 >> 1) & 7); break;
-      case 5: t = (uint8_t)(((b1 & 1) << 2) | ((b2 >> 6) & 3)); break;
-      case 6: t = (uint8_t)((b2 >> 3) & 7); break;
-      case 7: t = (uint8_t)(b2 & 7); break;
-      }
+  for(i = 0; i < N/2; ++i) {
+    b = r[i];
+    c0 = b & 0x0F;
+    c1 = b >> 4;
 #if GAMMA1 == (1 << 17)
-      a->coeffs[8*i+j] = (t <= 2) ? (int32_t)t - 1 : (int32_t)t - 48;
+    a->coeffs[2*i+0] = (c0 <= 3) ? (int32_t)c0 - 90 : ((c0 <= 7) ? (int32_t)c0 - 50 : (int32_t)c0 - 10);
+    a->coeffs[2*i+1] = (c1 <= 3) ? (int32_t)c1 - 90 : ((c1 <= 7) ? (int32_t)c1 - 50 : (int32_t)c1 - 10);
 #elif GAMMA1 == (1 << 19)
-      a->coeffs[8*i+j] = (t <= 2) ? (int32_t)t - 1 : (int32_t)t - 20;
+    a->coeffs[2*i+0] = (c0 <= 3) ? (int32_t)c0 - 34 : ((c0 <= 7) ? (int32_t)c0 - 22 : (int32_t)c0 - 10);
+    a->coeffs[2*i+1] = (c1 <= 3) ? (int32_t)c1 - 34 : ((c1 <= 7) ? (int32_t)c1 - 22 : (int32_t)c1 - 10);
 #endif
-    }
   }
   DBENCH_STOP(*tpack);
 }
@@ -1285,8 +1276,10 @@ void polyw1_pack(uint8_t *r, const poly *a) {
   }
   /* 每系数4 bit，2系数1字节 (GAMMA2==(Q-1)/32) */
 #elif GAMMA2 == (Q-1)/32
+  /* 系数为 [0,15] 的模16表示: 双方 w1 的整数可能相差 16(模数),
+     必须对低位同样掩码, 否则 bit4 会泄漏进打包字节, 与 unpack 不对称 */
   for(i = 0; i < N/2; ++i)
-    r[i] = a->coeffs[2*i+0] | (a->coeffs[2*i+1] << 4);
+    r[i] = (a->coeffs[2*i+0] & 0x0F) | ((a->coeffs[2*i+1] & 0x0F) << 4);
 #endif
 
   DBENCH_STOP(*tpack);

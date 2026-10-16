@@ -1,4 +1,4 @@
-SLPS: A Security Lattice-Based Proxy Signature for Finance Applications
+# SLPS: A Security Lattice-Based Proxy Signature for Finance Applications
 
 Research implementation accompanying the paper **“SLPS: A Security Lattice-Based Proxy Signature for Finance Applications”** by Weizhi Wang, Zhidong Xiong, Chenxi Sun, Mengdi Zhao, and Huiyan Chen.
 

@@ -2,7 +2,7 @@
 #define CONFIG_H
 
 #ifndef DILITHIUM_MODE
-#define DILITHIUM_MODE 2
+#define DILITHIUM_MODE 5
 #endif
 
 #if DILITHIUM_MODE == 2
