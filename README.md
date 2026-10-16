@@ -4,7 +4,7 @@ Research implementation accompanying the paper **“SLPS: A Security Lattice-Bas
 
 SLPS (Security Lattice-based Proxy Signature) supports ordinary signatures and delegated proxy signatures within a common lattice-based framework. A principal issues an authorization credential to an agent, who then signs messages on the principal’s behalf using the credential and the agent’s own secret key. The paper motivates this construction through supply chain finance digital bills.
 
-This repository provides C source code, a complete workflow demonstration, and a benchmark driver. It reuses Dilithium/ML-DSA arithmetic and SHAKE components; SLPS has its own algorithms and encodings and should not be treated as a FIPS 204 conformant ML-DSA implementation.
+This repository provides C source code, a complete workflow demonstration, and a benchmark driver. It reuses Dilithium/ML-DSA arithmetic and SHAKE components; The code base is built upon the implementation available at https://github.com/pq-crystals/dilithium  SLPS has its own algorithms and encodings and should not be treated as a FIPS 204 conformant ML-DSA implementation.
 
 ## Implemented algorithms
 
